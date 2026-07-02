@@ -1,186 +1,148 @@
 "use client";
 
-import { useSearchParams } from "next/navigation";
-import Link from "next/link";
+import { Suspense, useEffect, useState } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
+import NavBar from "@/components/NavBar";
 
-// Reads payment details from the URL, e.g.:
-// /payment-success?amount=400&upi=anju@ybl&ref=1509879247
-export default function PaymentSuccessPage() {
-  const searchParams = useSearchParams();
-
-  const amount = searchParams.get("amount") || "";
-  const upi = searchParams.get("upi") || "";
-  const ref = searchParams.get("ref") || "";
-  const date = new Date().toLocaleString("en-IN", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
+function formatAmount(n) {
+  const num = Number(n);
+  if (Number.isNaN(num)) return n;
+  return num.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
   });
+}
+
+function PaymentSuccessContent() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+
+  const paramAmount = searchParams.get("amount");
+  const paramUpi = searchParams.get("upi");
+  const paramRef = searchParams.get("ref");
+
+  // Fallback state, used only if the page was opened without query params
+  // (e.g. someone navigates here directly instead of via the socket
+  // redirect). We pull the user's most recent "paid" request so the page
+  // still shows real data instead of empty dashes.
+  const [fallback, setFallback] = useState(null);
+  const [fallbackLoading, setFallbackLoading] = useState(!paramAmount);
+
+  useEffect(() => {
+    if (paramAmount) return; // query params present, no need to fetch
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/withdraw");
+        const data = await res.json();
+        if (res.ok && !cancelled) {
+          const latestPaid = (data.requests || [])
+            .filter((r) => r.status === "paid")
+            .sort((a, b) => new Date(b.paidAt || b.createdAt) - new Date(a.paidAt || a.createdAt))[0];
+          setFallback(latestPaid || null);
+        }
+      } finally {
+        if (!cancelled) setFallbackLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [paramAmount]);
+
+  const amount = paramAmount || fallback?.amount;
+  const upi = paramUpi || fallback?.upiNumber;
+  const ref = paramRef || fallback?.refCode;
+
+  if (fallbackLoading) {
+    return (
+      <main className="flex-1 flex items-center justify-center">
+        <p className="text-paper-dim font-ledger">Loading…</p>
+      </main>
+    );
+  }
 
   return (
-    <div className="wrap">
-      <div className="card">
-        <div className="icon">
-          <svg viewBox="0 0 52 52" width="52" height="52">
-            <circle cx="26" cy="26" r="25" fill="none" stroke="currentColor" strokeWidth="2" />
-            <path
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="3.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M15 27l7 7 15-15"
-            />
+    <main className="flex-1 flex items-center justify-center px-6 py-16">
+      <div className="w-full max-w-md border border-line bg-ink-raised rounded-sm px-8 py-10 text-center">
+        {/* Success icon */}
+        <div className="mx-auto mb-6 w-14 h-14 rounded-full border border-ok/40 bg-ok/10 flex items-center justify-center">
+          <svg
+            width="28"
+            height="28"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="text-ok"
+          >
+            <path d="M20 6L9 17l-5-5" />
           </svg>
         </div>
 
-        <p className="eyebrow">WITHDRAWAL COMPLETE</p>
-        <h1>Payment sent</h1>
+        <h1 className="text-paper text-xl font-medium mb-2">
+          Payment successful
+        </h1>
+        <p className="text-paper-dim text-sm mb-8">
+          Your withdrawal has been approved and transferred.
+        </p>
 
-        {amount && (
-          <div className="amount">
-            {Number(amount).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
-            <span className="unit">USDT</span>
-          </div>
-        )}
-
-        <div className="details">
-          {upi && (
-            <div className="row">
-              <span className="label">UPI ID</span>
-              <span className="value">{upi}</span>
-            </div>
-          )}
-          {ref && (
-            <div className="row">
-              <span className="label">Reference</span>
-              <span className="value mono">{ref}</span>
-            </div>
-          )}
-          <div className="row">
-            <span className="label">Confirmed</span>
-            <span className="value">{date}</span>
+        {/* Ledger-style amount readout, consistent with the dashboard balance card */}
+        <div className="border border-line rounded-sm px-6 py-6 mb-6">
+          <div className="flex items-baseline justify-center gap-2">
+            <span className="font-ledger text-4xl text-paper tabular-nums">
+              {amount ? formatAmount(amount) : "—"}
+            </span>
+            <span className="font-ledger text-lg text-paper-dim">USDT</span>
           </div>
         </div>
 
-        <Link href="/" className="cta">
-          Back to dashboard
-        </Link>
+        {/* Details */}
+        <div className="text-left space-y-3 mb-8">
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-paper-dim">Sent to</span>
+            <span className="font-ledger text-paper">{upi || "—"}</span>
+          </div>
+          {ref && (
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-paper-dim">Reference</span>
+              <span className="font-ledger text-paper">{ref}</span>
+            </div>
+          )}
+        </div>
+
+        <div className="flex gap-3">
+          <button
+            onClick={() => router.push("/dashboard")}
+            className="flex-1 bg-accent text-ink py-2.5 rounded-sm font-medium hover:bg-accent-dim transition-colors"
+          >
+            Back to dashboard
+          </button>
+        </div>
       </div>
+    </main>
+  );
+}
 
-      <style jsx>{`
-        .wrap {
-          min-height: 100vh;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          background: #0d100c;
-          padding: 24px;
-          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+// useSearchParams requires a Suspense boundary in the App Router,
+// otherwise Next.js throws a build error on static/prerendered pages.
+export default function PaymentSuccessPage() {
+  return (
+    <>
+      <NavBar />
+      <Suspense
+        fallback={
+          <main className="flex-1 flex items-center justify-center">
+            <p className="text-paper-dim font-ledger">Loading…</p>
+          </main>
         }
-
-        .card {
-          width: 100%;
-          max-width: 440px;
-          background: #14180f;
-          border: 1px solid #262b21;
-          border-radius: 16px;
-          padding: 48px 36px 36px;
-          text-align: center;
-        }
-
-        .icon {
-          width: 72px;
-          height: 72px;
-          margin: 0 auto 24px;
-          border-radius: 999px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          background: rgba(74, 222, 128, 0.08);
-          color: #4ade80;
-        }
-
-        .eyebrow {
-          margin: 0 0 8px;
-          font-size: 12px;
-          font-weight: 600;
-          letter-spacing: 0.12em;
-          color: #e0ac54;
-        }
-
-        h1 {
-          margin: 0 0 28px;
-          font-size: 24px;
-          font-weight: 600;
-          color: #f5f3ee;
-        }
-
-        .amount {
-          font-size: 40px;
-          font-weight: 700;
-          color: #f5f3ee;
-          margin-bottom: 28px;
-          letter-spacing: -0.01em;
-        }
-
-        .unit {
-          font-size: 16px;
-          font-weight: 500;
-          color: #8b9186;
-          margin-left: 8px;
-        }
-
-        .details {
-          border-top: 1px solid #262b21;
-          border-bottom: 1px solid #262b21;
-          padding: 18px 0;
-          margin-bottom: 28px;
-          text-align: left;
-        }
-
-        .row {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          padding: 8px 0;
-        }
-
-        .label {
-          font-size: 13px;
-          color: #8b9186;
-        }
-
-        .value {
-          font-size: 14px;
-          color: #f5f3ee;
-          font-weight: 500;
-        }
-
-        .value.mono {
-          font-family: "SF Mono", ui-monospace, Menlo, monospace;
-          letter-spacing: 0.02em;
-        }
-
-        .cta {
-          display: inline-block;
-          width: 100%;
-          padding: 14px 0;
-          background: #e0ac54;
-          color: #14180f;
-          font-weight: 600;
-          font-size: 15px;
-          text-decoration: none;
-          border-radius: 10px;
-          transition: opacity 0.15s ease;
-        }
-
-        .cta:hover {
-          opacity: 0.9;
-        }
-      `}</style>
-    </div>
+      >
+        <PaymentSuccessContent />
+      </Suspense>
+    </>
   );
 }

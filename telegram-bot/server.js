@@ -5,6 +5,7 @@ const { Telegraf } = require("telegraf");
 const { connectDB } = require("./db");
 const TelegramMessage = require("./TelegramMessage");
 const WithdrawRequest = require("./WithdrawRequest");
+const { extractUpiFromText } = require("./ocrMatch"); // reuse the UPI-extraction regex
 require("./User"); // registers User schema for populate()
 
 const PORT = process.env.BOT_SOCKET_PORT || 4001;
@@ -36,7 +37,7 @@ if (!TELEGRAM_TOKEN) {
 //
 // ASSUMPTION: the endpoint accepts multipart/form-data with a "file" field.
 // We combine every text-ish field the response might contain (text, ocrText,
-// upiId, upi) into one string and search all of it for the Ref code — this
+// upiId, upi) into one string and search all of it for the UPI ID — this
 // way we don't depend on the OCR API isolating any specific field correctly.
 // If your /image-reader/ocr route uses a different request shape (e.g. a
 // different field name, or a base64 JSON body instead of multipart), tell
@@ -60,59 +61,13 @@ async function extractTextFromImage(buffer, filename = "screenshot.jpg") {
     .join(" ");
 }
 
-// Standard Levenshtein edit distance (insertions/deletions/substitutions).
-function levenshtein(a, b) {
-  const m = a.length;
-  const n = b.length;
-  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
-  for (let i = 0; i <= m; i++) dp[i][0] = i;
-  for (let j = 0; j <= n; j++) dp[0][j] = j;
-  for (let i = 1; i <= m; i++) {
-    for (let j = 1; j <= n; j++) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      dp[i][j] = Math.min(
-        dp[i - 1][j] + 1, // deletion
-        dp[i][j - 1] + 1, // insertion
-        dp[i - 1][j - 1] + cost // substitution
-      );
-    }
-  }
-  return dp[m][n];
+// Normalizes a UPI ID for comparison: lowercase + trimmed. UPI IDs are
+// exact strings (name@ybl, name@okhdfcbank, etc.) so — unlike the old
+// reference-code matching — we don't fuzzy-match here. Either the OCR
+// pulled out the same handle or it didn't.
+function normalizeUpi(upi) {
+  return (upi || "").toLowerCase().trim();
 }
-
-// Lowercases, strips anything that isn't a-z0-9, and fixes characters OCR
-// commonly confuses with hex digits (our Ref is a 24-char hex ObjectId).
-function normalizeForRefMatch(str) {
-  return str
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, "")
-    .replace(/l/g, "1")
-    .replace(/o/g, "0")
-    .replace(/i/g, "1");
-}
-
-// Returns the best (smallest) Levenshtein distance found between the ref
-// and any similarly-sized window of the OCR text. Infinity if nothing close.
-function refMatchDistance(ocrText, ref) {
-  if (!ocrText || !ref) return Infinity;
-
-  const normalizedRef = normalizeForRefMatch(ref);
-  const normalizedText = normalizeForRefMatch(ocrText);
-  const refLen = normalizedRef.length;
-  let best = Infinity;
-
-  for (let winLen = refLen - 2; winLen <= refLen + 2; winLen++) {
-    if (winLen <= 0) continue;
-    for (let i = 0; i + winLen <= normalizedText.length; i++) {
-      const window = normalizedText.slice(i, i + winLen);
-      const d = levenshtein(window, normalizedRef);
-      if (d < best) best = d;
-    }
-  }
-  return best;
-}
-
-const REF_MATCH_THRESHOLD = 3; // allow up to 3 character edits
 
 async function main() {
   await connectDB();
@@ -175,8 +130,6 @@ async function main() {
         `[telegram] [${payload.chatTitle}] ${payload.fromUsername}: ${payload.text}`
       );
 
-      console.log("DEBUG chatId:", chatId, "| MONITORED_GROUPS:", MONITORED_GROUPS);
-
       // Only run screenshot-matching logic in the monitored groups
       if (!MONITORED_GROUPS.includes(chatId)) return;
 
@@ -184,7 +137,7 @@ async function main() {
       // dashboard (it posts the "Payout needed" card directly to the group
       // and sets status "matched"). The bot only watches for screenshots.
 
-      // --- Screenshot -> OCR (via your OCR API) + Ref match against ANY
+      // --- Screenshot -> OCR (via your OCR API) + UPI ID match against ANY
       // "matched" request in this group (not just the most recent one,
       // since multiple withdrawals can be awaiting proof at once) ---
       if (msg.photo) {
@@ -208,39 +161,45 @@ async function main() {
           const buffer = Buffer.from(await imgRes.arrayBuffer());
 
           const extractedText = await extractTextFromImage(buffer);
+          const extractedUpi = extractUpiFromText(extractedText);
 
-          let best = null;
-          let bestDistance = Infinity;
-          for (const candidate of pendingMatches) {
-            const d = refMatchDistance(extractedText, candidate.refCode);
-            if (d < bestDistance) {
-              bestDistance = d;
-              best = candidate;
-            }
-          }
+          // Find the pending request whose stored UPI ID exactly matches
+          // the UPI ID pulled from the screenshot.
+          const match = extractedUpi
+            ? pendingMatches.find(
+                (candidate) => normalizeUpi(candidate.upiNumber) === extractedUpi
+              )
+            : null;
 
-          if (best && bestDistance <= REF_MATCH_THRESHOLD) {
-            best.status = "paid";
-            best.paidAt = new Date();
-            best.screenshotFileId = fileId;
-            await best.save();
+          if (match) {
+            match.status = "paid";
+            match.paidAt = new Date();
+            match.screenshotFileId = fileId;
+            await match.save();
 
             io.emit("withdraw:paid", {
-              _id: best._id.toString(),
-              amount: best.amount,
-              upiNumber: best.upiNumber,
-              paidAt: best.paidAt.toISOString(),
+              _id: match._id.toString(),
+              amount: match.amount,
+              upiNumber: match.upiNumber,
+              refCode: match.refCode,
+              paidAt: match.paidAt.toISOString(),
             });
 
             await ctx.telegram.sendMessage(
               chatId,
-              `✅ Payment confirmed (₹${best.amount}) — Ref: ${best.refCode}`,
+              `✅ Payment confirmed (₹${match.amount}) — UPI: ${match.upiNumber}`,
+              { reply_to_message_id: msg.message_id }
+            );
+          } else if (!extractedUpi) {
+            await ctx.telegram.sendMessage(
+              chatId,
+              `⚠️ Couldn't read a UPI ID from this screenshot. Please resend a clearer image.`,
               { reply_to_message_id: msg.message_id }
             );
           } else {
             await ctx.telegram.sendMessage(
               chatId,
-              `⚠️ Couldn't match this screenshot to any pending request. Please re-check and resend.`,
+              `⚠️ UPI ID "${extractedUpi}" doesn't match any pending request in this group.`,
               { reply_to_message_id: msg.message_id }
             );
           }

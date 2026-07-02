@@ -94,3 +94,14 @@ the bot's `.env` to match your actual app URL.
   still needs to run somewhere that supports long-running processes (a small
   VPS, Railway, Render, etc.) — serverless platforms aren't a fit for a
   bot that needs to stay connected via long polling.
+
+
+
+  ## final running steps
+  1. Run the ocr project to Read images We are us api
+  2. run the backend - npm start (if you found another process is running then run ):
+  netstat -ano | findstr :4001
+  taskkill /PID <pid_from_listening_line> /F
+  3. npm run dev
+  
+

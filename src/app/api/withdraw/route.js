@@ -20,7 +20,7 @@ function generateRefCode() {
 // Uses the raw Telegram Bot HTTP API directly — no need to go through the
 // bot's Node process, since any client holding the token can call sendMessage.
 // Returns the sent message_id on success, throws on failure.
-async function sendWithdrawRequestToTelegram({ refCode, amount, upiNumber }) {
+async function sendWithdrawRequestToTelegram({ refCode, name, amount, upiNumber }) {
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_GROUP_ID) {
     throw new Error(
       "Telegram bot is not configured (missing TELEGRAM_BOT_TOKEN or TELEGRAM_GROUP_ID in .env)."
@@ -29,6 +29,7 @@ async function sendWithdrawRequestToTelegram({ refCode, amount, upiNumber }) {
 
   const text =
     `🔔 Payout needed\n` +
+    `Name: ${name}\n` +
     `Amount: ₹${amount}\n` +
     `UPI: ${upiNumber}\n` +
     `Ref: ${refCode}`;
@@ -131,6 +132,7 @@ export async function POST(req) {
     try {
       messageId = await sendWithdrawRequestToTelegram({
         refCode: request.refCode,
+        name: requestName,
         amount: parsedAmount,
         upiNumber: upiNumber.trim(),
       });

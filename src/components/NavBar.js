@@ -27,11 +27,9 @@ export default function NavBar() {
       <div className="max-w-5xl mx-auto px-6 h-16 flex items-center justify-between">
         <Link href="/" className="flex items-baseline gap-2">
           <span className="font-ledger text-lg text-accent tracking-tight">
-            01.
+            TelePay
           </span>
-          <span className="text-sm uppercase tracking-[0.2em] text-paper">
-            Ledger
-          </span>
+          
         </Link>
 
         {!loading && (
